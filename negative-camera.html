@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>負片即時反轉</title>
+<style>
+:root{--bg:#f2f2f2;--fg:#111;--mut:#666;--pn:#fff;--ac:#0a6cff;--bd:#ccc;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#111;--fg:#eee;--mut:#999;--pn:#1c1c1e;--ac:#4da3ff;--bd:#333}}
+:root[data-theme="dark"]{--bg:#111;--fg:#eee;--mut:#999;--pn:#1c1c1e;--ac:#4da3ff;--bd:#333}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden}
+#stage{flex:1;min-height:0;background:#000;position:relative}
+#cv{width:100%;height:100%;object-fit:contain;display:block}
+#start{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#eee;text-align:center;padding:24px}
+#msg{font-size:13px;color:#f90;max-width:300px}
+button{font:inherit;color:var(--fg);background:var(--pn);border:1px solid var(--bd);border-radius:10px;padding:9px 12px;cursor:pointer}
+button.on,button.pri{background:var(--ac);border-color:var(--ac);color:#fff}
+#panel{background:var(--pn);border-top:1px solid var(--bd);padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.row label{font-size:13px;color:var(--mut);width:42px}
+.row input[type=range]{flex:1;min-width:0}
+.row button{flex:1;padding:8px 6px;font-size:14px}
+#hint{font-size:12px;color:var(--mut);margin:0}
+#shot{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;z-index:5}
+#shot img{max-width:100%;max-height:70%;object-fit:contain}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="cv" width="640" height="480"></canvas>
+  <div id="start">
+    <div style="font-size:42px">🎞️</div>
+    <div>把底片放在燈箱上，開啟相機即可看到正片</div>
+    <button class="pri" id="startBtn">開啟相機</button>
+    <div id="msg"></div>
+  </div>
+</div>
+<div id="panel">
+  <div class="row">
+    <button id="mBw" class="on">黑白</button>
+    <button id="mCo">彩色</button>
+    <button id="auto">自動色階</button>
+  </div>
+  <div class="row"><label>黑點</label><input id="sb" type="range" min="0" max="0.5" step="0.005" value="0"></div>
+  <div class="row"><label>白點</label><input id="sw" type="range" min="0.5" max="1" step="0.005" value="1"></div>
+  <div class="row"><label>Gamma</label><input id="sg" type="range" min="0.4" max="2.5" step="0.05" value="1"></div>
+  <div class="row">
+    <button id="rot">旋轉</button>
+    <button id="flip">左右翻轉</button>
+    <button id="reset">重設</button>
+    <button id="snap" class="pri">拍照</button>
+  </div>
+  <p id="hint">點一下畫面中沒有影像的空白片基，可校正色偏與整體亮度。</p>
+</div>
+<div id="shot">
+  <img id="shotImg" alt="">
+  <div class="row" style="width:100%;max-width:360px">
+    <button id="share" class="pri">分享／儲存</button>
+    <button id="close">關閉</button>
+  </div>
+  <div style="color:#aaa;font-size:12px">也可以長按圖片儲存</div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d', {willReadFrequently:true});
+const video = document.createElement('video');
+video.playsInline = true; video.muted = true;
+const S = {mode:'bw', black:0, white:1, gamma:1, rot:0, flip:false, base:[255,255,255], auto:false, sample:null};
+let blobCache = null;
+
+async function start(){
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080}}, audio:false});
+    video.srcObject = stream;
+    await video.play();
+    $('start').style.display = 'none';
+    loop();
+  }catch(e){
+    $('msg').textContent = '無法開啟相機：' + (e.message || e.name) + '（需要 HTTPS 並允許相機權限）';
+  }
+}
+
+function lut(){
+  const t = new Uint8ClampedArray(256), r = Math.max(0.01, S.white - S.black);
+  for(let i=0;i<256;i++){
+    let v = (i/255 - S.black)/r;
+    v = Math.min(1, Math.max(0, v));
+    t[i] = Math.pow(v, 1/S.gamma)*255;
+  }
+  return t;
+}
+
+function render(maxSide, out){
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if(!vw) return false;
+  const swap = S.rot % 2 === 1;
+  const w = swap ? vh : vw, h = swap ? vw : vh;
+  const sc = Math.min(1, maxSide / Math.max(w,h));
+  const ow = Math.round(w*sc), oh = Math.round(h*sc);
+  if(out.width !== ow || out.height !== oh){ out.width = ow; out.height = oh; }
+  const c = out.getContext('2d', {willReadFrequently:true});
+  c.save();
+  c.translate(ow/2, oh/2);
+  c.rotate(S.rot * Math.PI/2);
+  c.scale(S.flip ? -1 : 1, 1);
+  c.drawImage(video, -vw*sc/2, -vh*sc/2, vw*sc, vh*sc);
+  c.restore();
+  const img = c.getImageData(0,0,ow,oh), d = img.data, n = d.length;
+
+  if(S.sample){
+    const {x,y} = S.sample; S.sample = null;
+    let r=0,g=0,b=0,k=0;
+    for(let yy=Math.max(0,y-4); yy<=Math.min(oh-1,y+4); yy++)
+      for(let xx=Math.max(0,x-4); xx<=Math.min(ow-1,x+4); xx++){
+        const i=(yy*ow+xx)*4; r+=d[i]; g+=d[i+1]; b+=d[i+2]; k++;
+      }
+    S.base = [Math.max(20,r/k), Math.max(20,g/k), Math.max(20,b/k)];
+  }
+  const kr = 255/S.base[0], kg = 255/S.base[1], kb = 255/S.base[2];
+  const bw = S.mode === 'bw';
+
+  if(S.auto){
+    const hist = new Uint32Array(256); let cnt = 0;
+    for(let i=0;i<n;i+=16){
+      const R = Math.min(255,d[i]*kr), G = Math.min(255,d[i+1]*kg), B = Math.min(255,d[i+2]*kb);
+      hist[255 - Math.round(0.299*R+0.587*G+0.114*B)]++; cnt++;
+    }
+    let acc = 0, lo = 0, hi = 255;
+    for(let i=0;i<256;i++){ acc += hist[i]; if(acc >= cnt*0.005){ lo = i; break; } }
+    acc = 0;
+    for(let i=255;i>=0;i--){ acc += hist[i]; if(acc >= cnt*0.005){ hi = i; break; } }
+    if(hi - lo < 10){ lo = 0; hi = 255; }
+    S.black = lo/255; S.white = hi/255; S.auto = false;
+    $('sb').value = S.black; $('sw').value = S.white;
+  }
+
+  const L = lut();
+  for(let i=0;i<n;i+=4){
+    const R = Math.min(255,d[i]*kr), G = Math.min(255,d[i+1]*kg), B = Math.min(255,d[i+2]*kb);
+    if(bw){
+      const v = L[255 - Math.round(0.299*R+0.587*G+0.114*B)];
+      d[i]=d[i+1]=d[i+2]=v;
+    }else{
+      d[i]=L[255-Math.round(R)]; d[i+1]=L[255-Math.round(G)]; d[i+2]=L[255-Math.round(B)];
+    }
+  }
+  c.putImageData(img,0,0);
+  return true;
+}
+
+function loop(){
+  render(960, cv);
+  requestAnimationFrame(loop);
+}
+
+$('startBtn').onclick = start;
+const setMode = m => { S.mode = m; $('mBw').classList.toggle('on', m==='bw'); $('mCo').classList.toggle('on', m==='co'); };
+$('mBw').onclick = () => setMode('bw');
+$('mCo').onclick = () => setMode('co');
+$('auto').onclick = () => { S.auto = true; };
+$('sb').oninput = e => S.black = +e.target.value;
+$('sw').oninput = e => S.white = +e.target.value;
+$('sg').oninput = e => S.gamma = +e.target.value;
+$('rot').onclick = () => { S.rot = (S.rot+1) % 4; };
+$('flip').onclick = () => { S.flip = !S.flip; $('flip').classList.toggle('on', S.flip); };
+$('reset').onclick = () => {
+  Object.assign(S, {black:0, white:1, gamma:1, base:[255,255,255], auto:false});
+  $('sb').value = 0; $('sw').value = 1; $('sg').value = 1;
+};
+
+cv.addEventListener('click', e => {
+  const r = cv.getBoundingClientRect();
+  const s = Math.min(r.width/cv.width, r.height/cv.height);
+  const x = (e.clientX - r.left - (r.width - cv.width*s)/2)/s;
+  const y = (e.clientY - r.top - (r.height - cv.height*s)/2)/s;
+  if(x>=0 && y>=0 && x<cv.width && y<cv.height) S.sample = {x:Math.round(x), y:Math.round(y)};
+});
+
+$('snap').onclick = () => {
+  const tmp = document.createElement('canvas');
+  if(!render(4096, tmp)) return;
+  tmp.toBlob(b => {
+    blobCache = b;
+    $('shotImg').src = URL.createObjectURL(b);
+    $('shot').style.display = 'flex';
+  }, 'image/png');
+};
+$('close').onclick = () => { $('shot').style.display = 'none'; };
+$('share').onclick = async () => {
+  if(!blobCache) return;
+  const f = new File([blobCache], 'positive-' + Date.now() + '.png', {type:'image/png'});
+  try{
+    if(navigator.canShare && navigator.canShare({files:[f]})){ await navigator.share({files:[f]}); return; }
+  }catch(e){ return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blobCache); a.download = f.name; a.click();
+};
+</script>
+</body>
+</html>
