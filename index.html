@@ -5,24 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>負片即時反轉</title>
 <style>
-:root{--bg:#f2f2f2;--fg:#111;--mut:#666;--pn:#fff;--ac:#0a6cff;--bd:#ccc;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#111;--fg:#eee;--mut:#999;--pn:#1c1c1e;--ac:#4da3ff;--bd:#333}}
-:root[data-theme="dark"]{--bg:#111;--fg:#eee;--mut:#999;--pn:#1c1c1e;--ac:#4da3ff;--bd:#333}
-html,body{height:100%;margin:0}
-body{background:var(--bg);color:var(--fg);font-family:-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden}
-#stage{flex:1;min-height:0;background:#000;position:relative}
+html,body{height:100%;margin:0;background:#000;color:#eee;font-family:-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;overflow:hidden}
+#stage{position:fixed;inset:0;background:#000}
 #cv{width:100%;height:100%;object-fit:contain;display:block}
-#start{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#eee;text-align:center;padding:24px}
+#cv.fill{object-fit:cover}
+#start{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;padding:24px}
 #msg{font-size:13px;color:#f90;max-width:300px}
-button{font:inherit;color:var(--fg);background:var(--pn);border:1px solid var(--bd);border-radius:10px;padding:9px 12px;cursor:pointer}
-button.on,button.pri{background:var(--ac);border-color:var(--ac);color:#fff}
-#panel{background:var(--pn);border-top:1px solid var(--bd);padding:10px 12px;display:flex;flex-direction:column;gap:8px}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.row label{font-size:13px;color:var(--mut);width:42px}
+button{font:inherit;color:#fff;background:rgba(255,255,255,.16);border:0;border-radius:20px;padding:10px 14px;cursor:pointer}
+button.on,button.pri{background:#2f7cf6}
+#bar{position:absolute;left:0;right:0;bottom:0;padding:24px 16px calc(14px + env(safe-area-inset-bottom,0px));display:flex;align-items:center;justify-content:space-between;background:linear-gradient(transparent,rgba(0,0,0,.65))}
+#bar button.side{min-width:76px}
+#snap{width:76px;height:76px;border-radius:50%;background:#fff;border:5px solid rgba(255,255,255,.45);background-clip:padding-box;padding:0}
+#snap:active{background:#ccc}
+#panel{position:absolute;left:10px;right:10px;bottom:calc(112px + env(safe-area-inset-bottom,0px));max-height:55%;overflow:auto;background:rgba(18,18,18,.9);border-radius:16px;padding:12px;display:none;flex-direction:column;gap:10px}
+#panel.open{display:flex}
+.row{display:flex;gap:8px;align-items:center}
+.row label{font-size:13px;color:#bbb;width:48px;flex:none}
 .row input[type=range]{flex:1;min-width:0}
-.row button{flex:1;padding:8px 6px;font-size:14px}
-#hint{font-size:12px;color:var(--mut);margin:0}
-#shot{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;z-index:5}
+.row button{flex:1;padding:9px 6px;font-size:14px}
+#hint{font-size:12px;color:#aaa;margin:0}
+#shot{position:fixed;inset:0;background:rgba(0,0,0,.94);display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;z-index:5}
 #shot img{max-width:100%;max-height:70%;object-fit:contain}
 </style>
 </head>
@@ -35,23 +37,27 @@ button.on,button.pri{background:var(--ac);border-color:var(--ac);color:#fff}
     <button class="pri" id="startBtn">開啟相機</button>
     <div id="msg"></div>
   </div>
-</div>
-<div id="panel">
-  <div class="row">
-    <button id="mBw" class="on">黑白</button>
-    <button id="mCo">彩色</button>
-    <button id="auto">自動色階</button>
+  <div id="panel">
+    <div class="row">
+      <button id="mBw" class="on">黑白</button>
+      <button id="mCo">彩色</button>
+      <button id="auto">自動色階</button>
+    </div>
+    <div class="row"><label>黑點</label><input id="sb" type="range" min="0" max="0.5" step="0.005" value="0"></div>
+    <div class="row"><label>白點</label><input id="sw" type="range" min="0.5" max="1" step="0.005" value="1"></div>
+    <div class="row"><label>Gamma</label><input id="sg" type="range" min="0.4" max="2.5" step="0.05" value="1"></div>
+    <div class="row">
+      <button id="flip">左右翻轉</button>
+      <button id="fill">填滿畫面</button>
+      <button id="reset">重設</button>
+    </div>
+    <p id="hint">點一下畫面中沒有影像的空白片基，可校正色偏與整體亮度。手機橫放，畫面會更大。</p>
   </div>
-  <div class="row"><label>黑點</label><input id="sb" type="range" min="0" max="0.5" step="0.005" value="0"></div>
-  <div class="row"><label>白點</label><input id="sw" type="range" min="0.5" max="1" step="0.005" value="1"></div>
-  <div class="row"><label>Gamma</label><input id="sg" type="range" min="0.4" max="2.5" step="0.05" value="1"></div>
-  <div class="row">
-    <button id="rot">旋轉</button>
-    <button id="flip">左右翻轉</button>
-    <button id="reset">重設</button>
-    <button id="snap" class="pri">拍照</button>
+  <div id="bar">
+    <button id="tune" class="side">調整</button>
+    <button id="snap" aria-label="拍照"></button>
+    <button id="rot" class="side">旋轉</button>
   </div>
-  <p id="hint">點一下畫面中沒有影像的空白片基，可校正色偏與整體亮度。</p>
 </div>
 <div id="shot">
   <img id="shotImg" alt="">
@@ -66,7 +72,7 @@ const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d', {willReadFrequently:true});
 const video = document.createElement('video');
 video.playsInline = true; video.muted = true;
-const S = {mode:'bw', black:0, white:1, gamma:1, rot:0, flip:false, base:[255,255,255], auto:false, sample:null};
+const S = {mode:'bw', black:0, white:1, gamma:1, rot:0, flip:false, fill:false, base:[255,255,255], auto:false, sample:null};
 let blobCache = null;
 
 async function start(){
@@ -151,7 +157,7 @@ function render(maxSide, out){
 }
 
 function loop(){
-  render(960, cv);
+  render(1280, cv);
   requestAnimationFrame(loop);
 }
 
@@ -165,6 +171,8 @@ $('sw').oninput = e => S.white = +e.target.value;
 $('sg').oninput = e => S.gamma = +e.target.value;
 $('rot').onclick = () => { S.rot = (S.rot+1) % 4; };
 $('flip').onclick = () => { S.flip = !S.flip; $('flip').classList.toggle('on', S.flip); };
+$('fill').onclick = () => { S.fill = !S.fill; cv.classList.toggle('fill', S.fill); $('fill').classList.toggle('on', S.fill); };
+$('tune').onclick = () => { const o = $('panel').classList.toggle('open'); $('tune').classList.toggle('on', o); };
 $('reset').onclick = () => {
   Object.assign(S, {black:0, white:1, gamma:1, base:[255,255,255], auto:false});
   $('sb').value = 0; $('sw').value = 1; $('sg').value = 1;
@@ -172,7 +180,7 @@ $('reset').onclick = () => {
 
 cv.addEventListener('click', e => {
   const r = cv.getBoundingClientRect();
-  const s = Math.min(r.width/cv.width, r.height/cv.height);
+  const s = S.fill ? Math.max(r.width/cv.width, r.height/cv.height) : Math.min(r.width/cv.width, r.height/cv.height);
   const x = (e.clientX - r.left - (r.width - cv.width*s)/2)/s;
   const y = (e.clientY - r.top - (r.height - cv.height*s)/2)/s;
   if(x>=0 && y>=0 && x<cv.width && y<cv.height) S.sample = {x:Math.round(x), y:Math.round(y)};
