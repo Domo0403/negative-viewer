@@ -2,11 +2,11 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>負片即時反轉</title>
 <style>
 html,body{height:100%;margin:0;background:#000;color:#eee;font-family:-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;overflow:hidden}
-#stage{position:fixed;inset:0;background:#000}
+#stage{position:fixed;inset:0;background:#000;touch-action:none}
 #cv{width:100%;height:100%;object-fit:contain;display:block}
 #cv.fill{object-fit:cover}
 #start{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;padding:24px}
@@ -18,7 +18,7 @@ button.on,button.pri{background:#2f7cf6}
 #snap{width:76px;height:76px;border-radius:50%;background:#fff;border:5px solid rgba(255,255,255,.45);background-clip:padding-box;padding:0}
 #snap:active{background:#ccc}
 #ring{position:absolute;width:64px;height:64px;margin:-32px 0 0 -32px;border:2px solid #ffd60a;border-radius:50%;pointer-events:none;opacity:0;transition:opacity .3s}
-#panel{position:absolute;left:10px;right:10px;bottom:calc(112px + env(safe-area-inset-bottom,0px));max-height:55%;overflow:auto;background:rgba(18,18,18,.9);border-radius:16px;padding:12px;display:none;flex-direction:column;gap:10px}
+#panel{touch-action:pan-y;position:absolute;left:10px;right:10px;bottom:calc(112px + env(safe-area-inset-bottom,0px));max-height:55%;overflow:auto;background:rgba(18,18,18,.9);border-radius:16px;padding:12px;display:none;flex-direction:column;gap:10px}
 #panel.open{display:flex}
 .row{display:flex;gap:8px;align-items:center}
 .row label{font-size:13px;color:#bbb;width:48px;flex:none}
@@ -80,6 +80,7 @@ video.playsInline = true; video.muted = true;
 const S = {mode:'bw', black:0, white:1, gamma:1, rot:0, flip:false, fill:false, base:[255,255,255], auto:false, sample:null};
 let blobCache = null;
 let track = null, caps = {};
+S.dz = 1;
 
 async function start(){
   try{
@@ -106,6 +107,10 @@ async function setupCaps(){
       const z = $('sz'); z.min = caps.zoom.min; z.max = caps.zoom.max; z.step = caps.zoom.step || 0.1;
       z.value = st.zoom || caps.zoom.min; $('zRow').style.display = 'flex';
       z.oninput = () => track.applyConstraints({advanced:[{zoom:+z.value}]}).catch(()=>{});
+    }
+    if(!caps.zoom){
+      const z = $('sz'); z.min = 1; z.max = 5; z.step = 0.05; z.value = 1; $('zRow').style.display = 'flex';
+      z.oninput = () => { S.dz = +z.value; };
     }
     if(caps.focusDistance){
       const f = $('sf'); f.min = caps.focusDistance.min; f.max = caps.focusDistance.max; f.step = caps.focusDistance.step || 0.01;
@@ -149,6 +154,7 @@ function render(maxSide, out){
   c.save();
   c.translate(ow/2, oh/2);
   c.rotate(S.rot * Math.PI/2);
+  c.scale(S.dz, S.dz);
   c.scale(S.flip ? -1 : 1, 1);
   c.drawImage(video, -vw*sc/2, -vh*sc/2, vw*sc, vh*sc);
   c.restore();
@@ -217,7 +223,33 @@ $('reset').onclick = () => {
   $('sb').value = 0; $('sw').value = 1; $('sg').value = 1;
 };
 
+const ptrs = new Map(); let pinch = null, lastPinch = 0, zBusy = false;
+function pdist(){ const v = [...ptrs.values()]; return Math.hypot(v[0][0]-v[1][0], v[0][1]-v[1][1]) || 1; }
+function curZoom(){ return caps.zoom ? +$('sz').value : S.dz; }
+function setZoom(z){
+  if(caps.zoom){
+    z = Math.min(caps.zoom.max, Math.max(caps.zoom.min, z)); $('sz').value = z;
+    if(zBusy) return; zBusy = true;
+    track.applyConstraints({advanced:[{zoom:z}]}).catch(()=>{}).finally(() => { zBusy = false; });
+  }else{
+    S.dz = Math.min(5, Math.max(1, z)); $('sz').value = S.dz;
+  }
+}
+cv.addEventListener('pointerdown', e => {
+  ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if(ptrs.size === 2) pinch = {d: pdist(), z: curZoom()};
+});
+cv.addEventListener('pointermove', e => {
+  if(!ptrs.has(e.pointerId)) return;
+  ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if(ptrs.size === 2 && pinch){ lastPinch = Date.now(); setZoom(pinch.z * pdist() / pinch.d); }
+});
+const endPtr = e => { ptrs.delete(e.pointerId); if(ptrs.size < 2) pinch = null; };
+cv.addEventListener('pointerup', endPtr);
+cv.addEventListener('pointercancel', endPtr);
+
 cv.addEventListener('click', e => {
+  if(Date.now() - lastPinch < 400) return;
   const r = cv.getBoundingClientRect();
   const s = S.fill ? Math.max(r.width/cv.width, r.height/cv.height) : Math.min(r.width/cv.width, r.height/cv.height);
   const x = (e.clientX - r.left - (r.width - cv.width*s)/2)/s;
