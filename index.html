@@ -26,13 +26,17 @@ button.on,button.pri{background:#2f7cf6}
 .row button{flex:1;padding:9px 6px;font-size:14px}
 #hint{font-size:12px;color:#aaa;margin:0}
 #shot{position:fixed;inset:0;background:rgba(0,0,0,.94);display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;z-index:5}
-#shot img{max-width:100%;max-height:70%;object-fit:contain}
+#shotWrap{width:100%;flex:1;min-height:0;overflow:hidden;touch-action:none}
+#shotImg{width:100%;height:100%;object-fit:contain;transform-origin:0 0;user-select:none;-webkit-user-drag:none;display:block}
+#sharp{position:absolute;top:calc(env(safe-area-inset-top,0px) + 10px);left:12px;width:90px;height:6px;border-radius:3px;background:rgba(255,255,255,.25);overflow:hidden;pointer-events:none}
+#sharp i{display:block;height:100%;width:0;background:#30d158}
 </style>
 </head>
 <body>
 <div id="stage">
   <canvas id="cv" width="640" height="480"></canvas>
   <div id="ring"></div>
+  <div id="sharp"><i></i></div>
   <div id="start">
     <div style="font-size:42px">🎞️</div>
     <div>把底片放在燈箱上，開啟相機即可看到正片</div>
@@ -56,7 +60,7 @@ button.on,button.pri{background:#2f7cf6}
       <button id="fill">填滿畫面</button>
       <button id="reset">重設</button>
     </div>
-    <p id="hint">點畫面可重新對焦。要校正色偏，按「取樣片基」再點底片上沒有影像的空白處。手機橫放，畫面會更大。</p>
+    <p id="hint">點畫面可重新對焦。要校正色偏，按「取樣片基」再點底片上沒有影像的空白處。手機橫放，畫面會更大。左上角的綠色條越長代表越清晰，可用來微調對焦。</p>
   </div>
   <div id="bar">
     <button id="tune" class="side">調整</button>
@@ -65,12 +69,12 @@ button.on,button.pri{background:#2f7cf6}
   </div>
 </div>
 <div id="shot">
-  <img id="shotImg" alt="">
+  <div id="shotWrap"><img id="shotImg" alt=""></div>
   <div class="row" style="width:100%;max-width:360px">
     <button id="share" class="pri">分享／儲存</button>
     <button id="close">關閉</button>
   </div>
-  <div style="color:#aaa;font-size:12px">也可以長按圖片儲存</div>
+  <div style="color:#aaa;font-size:12px">兩指放大可看細節，按「分享／儲存」存檔</div>
 </div>
 <script>
 const $ = id => document.getElementById(id);
@@ -130,6 +134,12 @@ async function tapFocus(){
 function ring(x,y){
   const g = $('ring'); g.style.left = x+'px'; g.style.top = y+'px'; g.style.opacity = 1;
   setTimeout(() => { g.style.opacity = 0; }, 700);
+}
+
+let sMax = 1;
+function sharpUpdate(v){
+  sMax = Math.max(v, sMax*0.995);
+  $('sharp').firstElementChild.style.width = Math.min(100, v/sMax*100) + '%';
 }
 
 function lut(){
@@ -197,6 +207,15 @@ function render(maxSide, out){
       d[i]=L[255-Math.round(R)]; d[i+1]=L[255-Math.round(G)]; d[i+2]=L[255-Math.round(B)];
     }
   }
+  if(out === cv){
+    const x0 = Math.floor(ow*.33), x1 = Math.floor(ow*.67), y0 = Math.floor(oh*.33), y1 = Math.floor(oh*.67);
+    let sum = 0, cn = 0;
+    for(let y=y0; y<y1; y+=2) for(let x=x0; x<x1; x+=2){
+      const i = (y*ow+x)*4;
+      sum += Math.abs(d[i+1]-d[i+5]) + Math.abs(d[i+1]-d[i+1+ow*4]); cn++;
+    }
+    sharpUpdate(sum/cn);
+  }
   c.putImageData(img,0,0);
   return true;
 }
@@ -263,12 +282,50 @@ cv.addEventListener('click', e => {
 });
 $('samp').onclick = () => { S.arm = !S.arm; $('samp').classList.toggle('on', S.arm); };
 
+const V = {k:1, x:0, y:0}, vp = new Map(); let vpinch = null;
+const wrap = $('shotWrap'), im = $('shotImg');
+function vApply(){ im.style.transform = 'translate(' + V.x + 'px,' + V.y + 'px) scale(' + V.k + ')'; }
+function vReset(){ V.k = 1; V.x = 0; V.y = 0; vApply(); }
+function vdist(){ const v = [...vp.values()]; return Math.hypot(v[0][0]-v[1][0], v[0][1]-v[1][1]) || 1; }
+function vZoomAt(cx, cy, nk){
+  nk = Math.min(12, Math.max(1, nk));
+  V.x = cx - (cx - V.x) * nk / V.k; V.y = cy - (cy - V.y) * nk / V.k; V.k = nk;
+  if(nk === 1){ V.x = 0; V.y = 0; }
+  vApply();
+}
+wrap.addEventListener('pointerdown', e => {
+  wrap.setPointerCapture(e.pointerId);
+  vp.set(e.pointerId, [e.clientX, e.clientY]);
+  if(vp.size === 2) vpinch = {d: vdist(), k: V.k};
+});
+wrap.addEventListener('pointermove', e => {
+  const p = vp.get(e.pointerId); if(!p) return;
+  const nx = [e.clientX, e.clientY];
+  if(vp.size === 2 && vpinch){
+    vp.set(e.pointerId, nx);
+    const v = [...vp.values()], r = wrap.getBoundingClientRect();
+    vZoomAt((v[0][0]+v[1][0])/2 - r.left, (v[0][1]+v[1][1])/2 - r.top, vpinch.k * vdist() / vpinch.d);
+  }else if(vp.size === 1 && V.k > 1){
+    V.x += nx[0]-p[0]; V.y += nx[1]-p[1]; vp.set(e.pointerId, nx); vApply();
+  }else vp.set(e.pointerId, nx);
+});
+const vEnd = e => { vp.delete(e.pointerId); if(vp.size < 2) vpinch = null; };
+wrap.addEventListener('pointerup', vEnd);
+wrap.addEventListener('pointercancel', vEnd);
+wrap.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = wrap.getBoundingClientRect();
+  vZoomAt(e.clientX - r.left, e.clientY - r.top, V.k * (e.deltaY < 0 ? 1.2 : 1/1.2));
+}, {passive:false});
+wrap.addEventListener('dblclick', vReset);
+
 $('snap').onclick = () => {
   const tmp = document.createElement('canvas');
   if(!render(4096, tmp)) return;
   tmp.toBlob(b => {
     blobCache = b;
     $('shotImg').src = URL.createObjectURL(b);
+    vReset();
     $('shot').style.display = 'flex';
   }, 'image/png');
 };
