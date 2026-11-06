@@ -17,6 +17,7 @@ button.on,button.pri{background:#2f7cf6}
 #bar button.side{min-width:76px}
 #snap{width:76px;height:76px;border-radius:50%;background:#fff;border:5px solid rgba(255,255,255,.45);background-clip:padding-box;padding:0}
 #snap:active{background:#ccc}
+#ring{position:absolute;width:64px;height:64px;margin:-32px 0 0 -32px;border:2px solid #ffd60a;border-radius:50%;pointer-events:none;opacity:0;transition:opacity .3s}
 #panel{position:absolute;left:10px;right:10px;bottom:calc(112px + env(safe-area-inset-bottom,0px));max-height:55%;overflow:auto;background:rgba(18,18,18,.9);border-radius:16px;padding:12px;display:none;flex-direction:column;gap:10px}
 #panel.open{display:flex}
 .row{display:flex;gap:8px;align-items:center}
@@ -31,6 +32,7 @@ button.on,button.pri{background:#2f7cf6}
 <body>
 <div id="stage">
   <canvas id="cv" width="640" height="480"></canvas>
+  <div id="ring"></div>
   <div id="start">
     <div style="font-size:42px">🎞️</div>
     <div>把底片放在燈箱上，開啟相機即可看到正片</div>
@@ -46,12 +48,15 @@ button.on,button.pri{background:#2f7cf6}
     <div class="row"><label>黑點</label><input id="sb" type="range" min="0" max="0.5" step="0.005" value="0"></div>
     <div class="row"><label>白點</label><input id="sw" type="range" min="0.5" max="1" step="0.005" value="1"></div>
     <div class="row"><label>Gamma</label><input id="sg" type="range" min="0.4" max="2.5" step="0.05" value="1"></div>
+    <div class="row" id="zRow" style="display:none"><label>變焦</label><input id="sz" type="range"></div>
+    <div class="row" id="fRow" style="display:none"><label>對焦</label><input id="sf" type="range"></div>
+    <div class="row"><button id="samp">取樣片基（再點空白處）</button></div>
     <div class="row">
       <button id="flip">左右翻轉</button>
       <button id="fill">填滿畫面</button>
       <button id="reset">重設</button>
     </div>
-    <p id="hint">點一下畫面中沒有影像的空白片基，可校正色偏與整體亮度。手機橫放，畫面會更大。</p>
+    <p id="hint">點畫面可重新對焦。要校正色偏，按「取樣片基」再點底片上沒有影像的空白處。手機橫放，畫面會更大。</p>
   </div>
   <div id="bar">
     <button id="tune" class="side">調整</button>
@@ -74,6 +79,7 @@ const video = document.createElement('video');
 video.playsInline = true; video.muted = true;
 const S = {mode:'bw', black:0, white:1, gamma:1, rot:0, flip:false, fill:false, base:[255,255,255], auto:false, sample:null};
 let blobCache = null;
+let track = null, caps = {};
 
 async function start(){
   try{
@@ -81,11 +87,44 @@ async function start(){
       video:{facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080}}, audio:false});
     video.srcObject = stream;
     await video.play();
+    track = stream.getVideoTracks()[0];
+    setupCaps();
     $('start').style.display = 'none';
     loop();
   }catch(e){
     $('msg').textContent = '無法開啟相機：' + (e.message || e.name) + '（需要 HTTPS 並允許相機權限）';
   }
+}
+
+async function setupCaps(){
+  try{
+    caps = track.getCapabilities ? track.getCapabilities() : {};
+    const st = track.getSettings ? track.getSettings() : {};
+    if(caps.focusMode && caps.focusMode.includes('continuous'))
+      await track.applyConstraints({advanced:[{focusMode:'continuous'}]});
+    if(caps.zoom){
+      const z = $('sz'); z.min = caps.zoom.min; z.max = caps.zoom.max; z.step = caps.zoom.step || 0.1;
+      z.value = st.zoom || caps.zoom.min; $('zRow').style.display = 'flex';
+      z.oninput = () => track.applyConstraints({advanced:[{zoom:+z.value}]}).catch(()=>{});
+    }
+    if(caps.focusDistance){
+      const f = $('sf'); f.min = caps.focusDistance.min; f.max = caps.focusDistance.max; f.step = caps.focusDistance.step || 0.01;
+      f.value = st.focusDistance || caps.focusDistance.min; $('fRow').style.display = 'flex';
+      f.oninput = () => track.applyConstraints({advanced:[{focusMode:'manual', focusDistance:+f.value}]}).catch(()=>{});
+    }
+  }catch(e){}
+}
+async function tapFocus(){
+  if(!track || !caps.focusMode) return;
+  try{
+    const m = caps.focusMode.includes('single-shot') ? 'single-shot' : 'continuous';
+    await track.applyConstraints({advanced:[{focusMode:m}]});
+    if(m === 'single-shot') setTimeout(() => track.applyConstraints({advanced:[{focusMode:'continuous'}]}).catch(()=>{}), 1500);
+  }catch(e){}
+}
+function ring(x,y){
+  const g = $('ring'); g.style.left = x+'px'; g.style.top = y+'px'; g.style.opacity = 1;
+  setTimeout(() => { g.style.opacity = 0; }, 700);
 }
 
 function lut(){
@@ -183,8 +222,14 @@ cv.addEventListener('click', e => {
   const s = S.fill ? Math.max(r.width/cv.width, r.height/cv.height) : Math.min(r.width/cv.width, r.height/cv.height);
   const x = (e.clientX - r.left - (r.width - cv.width*s)/2)/s;
   const y = (e.clientY - r.top - (r.height - cv.height*s)/2)/s;
-  if(x>=0 && y>=0 && x<cv.width && y<cv.height) S.sample = {x:Math.round(x), y:Math.round(y)};
+  if(S.arm){
+    if(x>=0 && y>=0 && x<cv.width && y<cv.height) S.sample = {x:Math.round(x), y:Math.round(y)};
+    S.arm = false; $('samp').classList.remove('on');
+  }else{
+    ring(e.clientX, e.clientY); tapFocus();
+  }
 });
+$('samp').onclick = () => { S.arm = !S.arm; $('samp').classList.toggle('on', S.arm); };
 
 $('snap').onclick = () => {
   const tmp = document.createElement('canvas');
